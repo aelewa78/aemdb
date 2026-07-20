@@ -8,6 +8,7 @@ const ROOT = __dirname;
 const TMDB_TOKEN = process.env.TMDB_ACCESS_TOKEN;
 const OMDB_KEY = process.env.OMDB_API_KEY;
 const rtCache = new Map();
+const castPhotoCache = new Map();
 
 const mime = {
   ".html": "text/html; charset=utf-8",
@@ -45,6 +46,25 @@ async function fetchText(url, timeout = 9000) {
 
 const normalizeTitle = (value = "") => value.toLowerCase().replace(/&amp;/g, "and").replace(/&/g, "and").replace(/[^a-z0-9]+/g, " ").trim();
 const decodeText = (value = "") => value.replace(/&amp;/g, "&").replace(/&#39;/g, "'").replace(/&quot;/g, '"');
+
+async function castProfile(name) {
+  if (castPhotoCache.has(name)) return castPhotoCache.get(name);
+  let photo = null;
+  try {
+    const data = JSON.parse(await fetchText(`https://v3.sg.media-imdb.com/suggestion/x/${encodeURIComponent(name)}.json`));
+    const people = (data.d || []).filter((item) => String(item.id || "").startsWith("nm"));
+    const person = people.find((item) => normalizeTitle(item.l) === normalizeTitle(name)) || people[0];
+    if (person?.i?.imageUrl) photo = person.i.imageUrl.replace(/\._V1_.*\.jpg$/i, "._V1_SX300.jpg");
+  } catch (error) {
+    console.error(`Cast image lookup failed for ${name}:`, error);
+  }
+  castPhotoCache.set(name, photo);
+  return photo;
+}
+
+async function castProfiles(names) {
+  return Promise.all(names.slice(0, 8).map(async (name) => ({ name, role: "Cast", photo: await castProfile(name) })));
+}
 
 async function rottenTomatoes(title, type) {
   const cacheKey = `${type}:${normalizeTitle(title)}`;
@@ -150,9 +170,10 @@ async function cinemetaDetail(type, id, includeRt = true) {
   const seasons = new Set(episodes.map((episode) => Number(episode.season)));
   const aired = episodes.filter((episode) => new Date(episode.firstAired || episode.released || 0) <= new Date());
   const latest = aired.sort((a, b) => new Date(b.firstAired || b.released) - new Date(a.firstAired || a.released))[0];
-  const [rt, watching] = includeRt
-    ? await Promise.all([rottenTomatoes(meta.name, type), justWatch(meta.name, type)])
-    : [{ score: "—", audienceScore: "—", reviewCount: 0, reviews: [], url: `https://www.rottentomatoes.com/search?search=${encodeURIComponent(meta.name)}` }, { providers: [], link: null }];
+  const castNames = (meta.cast || []).slice(0, 8);
+  const [rt, watching, actors] = includeRt
+    ? await Promise.all([rottenTomatoes(meta.name, type), justWatch(meta.name, type), castProfiles(castNames)])
+    : [{ score: "—", audienceScore: "—", reviewCount: 0, reviews: [], url: `https://www.rottentomatoes.com/search?search=${encodeURIComponent(meta.name)}` }, { providers: [], link: null }, castNames.map((name) => ({ name, role: "Cast", photo: null }))];
   const releaseDate = meta.released ? meta.released.slice(0, 10) : "To be announced";
   const releaseIsFuture = meta.released && new Date(meta.released) > new Date();
   return {
@@ -176,7 +197,7 @@ async function cinemetaDetail(type, id, includeRt = true) {
     episodes: episodes.length || null,
     latestEpisode: latest ? `S${latest.season} E${latest.number || latest.episode} · ${latest.name}` : null,
     latestAirDate: latest ? (latest.firstAired || latest.released || "").slice(0, 10) : null,
-    actors: (meta.cast || []).slice(0, 8).map((name) => ({ name, role: "Cast" })),
+    actors,
     trailer: meta.trailers?.[0]?.source ? `https://www.youtube.com/embed/${meta.trailers[0].source}?rel=0` : null,
     providers: watching.providers,
     providerLink: watching.link,
