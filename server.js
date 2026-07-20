@@ -133,6 +133,9 @@ async function handleSearch(url, res) {
   if (!query) return json(res, 200, { results: [] });
   if (!TMDB_TOKEN) {
     const searches = await Promise.allSettled([cinemetaSearch(query, "movie"), cinemetaSearch(query, "tv")]);
+    searches.forEach((result, index) => {
+      if (result.status === "rejected") console.error(`Cinemeta ${index === 0 ? "movie" : "series"} search failed:`, result.reason);
+    });
     let results = searches.flatMap((result) => result.status === "fulfilled" ? result.value : []);
     if (!results.length) return json(res, 200, { source: "cinemeta", results: [] });
     const wanted = normalizeTitle(query);
