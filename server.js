@@ -49,7 +49,7 @@ const decodeText = (value = "") => value.replace(/&amp;/g, "&").replace(/&#39;/g
 async function rottenTomatoes(title, type) {
   const cacheKey = `${type}:${normalizeTitle(title)}`;
   if (rtCache.has(cacheKey)) return rtCache.get(cacheKey);
-  const fallback = { score: "—", url: `https://www.rottentomatoes.com/search?search=${encodeURIComponent(title)}` };
+  const fallback = { score: "—", audienceScore: "—", reviewCount: 0, reviews: [], url: `https://www.rottentomatoes.com/search?search=${encodeURIComponent(title)}` };
   try {
     const searchHtml = await fetchText(fallback.url);
     const matches = [...searchHtml.matchAll(/href="(https:\/\/www\.rottentomatoes\.com\/(?:m|tv)\/[^"?#]+)"[^>]*data-qa="info-name"[^>]*slot="title"[^>]*>\s*([^<]+)</gi)]
@@ -59,13 +59,67 @@ async function rottenTomatoes(title, type) {
     const candidate = exact || matches.find((match) => match.url.includes(wantedPrefix));
     if (!candidate) return fallback;
     const page = await fetchText(candidate.url);
-    const score = page.match(/"criticsScore":\{[^}]*"score":"?(\d{1,3})"?/i)?.[1]
+    const reviewDataMatch = page.match(/<script type="application\/json" data-json="reviewsData">([\s\S]*?)<\/script>/i);
+    let reviewData = {};
+    try { reviewData = reviewDataMatch ? JSON.parse(reviewDataMatch[1]) : {}; } catch { reviewData = {}; }
+    const score = reviewData.criticsScore?.score
+      || page.match(/"criticsScore":\{[^}]*"score":"?(\d{1,3})"?/i)?.[1]
       || page.match(/"criticsScore":\{[^}]*"scorePercent":"(\d{1,3})%"/i)?.[1];
-    const result = { score: score ? `${score}%` : "—", url: candidate.url };
+    const audienceScore = reviewData.audienceScore?.score;
+    const reviews = (reviewData.reviews || []).slice(0, 1).map((review) => ({
+      name: review.displayName || review.user?.displayName || "Audience member",
+      rating: review.rating || null,
+      text: (review.review || "").split(/\s+/).slice(0, 20).join(" ") + ((review.review || "").split(/\s+/).length > 20 ? "…" : ""),
+      date: review.displayDate || "",
+      verified: Boolean(review.isVerified),
+    })).filter((review) => review.text);
+    const result = {
+      score: score ? `${score}%` : "—",
+      audienceScore: audienceScore ? `${audienceScore}%` : "—",
+      reviewCount: reviewData.audienceScore?.reviewCount || 0,
+      reviews,
+      url: candidate.url,
+    };
     rtCache.set(cacheKey, result);
     return result;
   } catch {
     return fallback;
+  }
+}
+
+async function justWatch(title, type, country = "US") {
+  const query = `query Search($filter:TitleFilter!,$country:Country!,$language:Language!,$first:Int!,$platform:Platform!){popularTitles(country:$country,filter:$filter,first:$first){edges{node{id objectType content(country:$country,language:$language){title fullPath} offers(country:$country,platform:$platform){monetizationType standardWebURL package{clearName icon}}}}}}`;
+  try {
+    const response = await fetch("https://apis.justwatch.com/graphql", {
+      method: "POST",
+      headers: { "content-type": "application/json", "User-Agent": "Mozilla/5.0 (compatible; ReelFinder/1.0)" },
+      body: JSON.stringify({ query, variables: { filter: { searchQuery: title }, country, language: "en", first: 6, platform: "WEB" } }),
+      signal: AbortSignal.timeout(9000),
+    });
+    if (!response.ok) throw new Error(`JustWatch request failed (${response.status})`);
+    const data = await response.json();
+    const edges = data.data?.popularTitles?.edges || [];
+    const wantedType = type === "movie" ? "MOVIE" : "SHOW";
+    const exact = edges.find(({ node }) => node.objectType === wantedType && normalizeTitle(node.content?.title) === normalizeTitle(title));
+    const match = exact || edges.find(({ node }) => node.objectType === wantedType);
+    if (!match) return { providers: [], link: null };
+    const priority = { FREE: 0, ADS: 1, FLATRATE: 2, RENT: 3, BUY: 4 };
+    const offers = (match.node.offers || [])
+      .filter((offer) => offer.package?.clearName && offer.standardWebURL)
+      .sort((a, b) => (priority[a.monetizationType] ?? 9) - (priority[b.monetizationType] ?? 9));
+    const unique = offers.filter((offer, index, all) => all.findIndex((item) => item.package.clearName === offer.package.clearName && item.monetizationType === offer.monetizationType) === index);
+    return {
+      providers: unique.slice(0, 10).map((offer) => ({
+        name: offer.package.clearName,
+        access: offer.monetizationType === "FLATRATE" ? "Stream" : offer.monetizationType === "ADS" ? "Free with ads" : offer.monetizationType === "FREE" ? "Free" : offer.monetizationType === "RENT" ? "Rent" : "Buy",
+        link: offer.standardWebURL,
+        logo: offer.package.icon ? `https://images.justwatch.com${offer.package.icon.replace("{profile}", "s100").replace("{format}", "png")}` : null,
+      })),
+      link: `https://www.justwatch.com${match.node.content?.fullPath || `/us/search?q=${encodeURIComponent(title)}`}`,
+    };
+  } catch (error) {
+    console.error("JustWatch lookup failed:", error);
+    return { providers: [], link: null };
   }
 }
 
@@ -96,9 +150,9 @@ async function cinemetaDetail(type, id, includeRt = true) {
   const seasons = new Set(episodes.map((episode) => Number(episode.season)));
   const aired = episodes.filter((episode) => new Date(episode.firstAired || episode.released || 0) <= new Date());
   const latest = aired.sort((a, b) => new Date(b.firstAired || b.released) - new Date(a.firstAired || a.released))[0];
-  const rt = includeRt
-    ? await rottenTomatoes(meta.name, type)
-    : { score: "—", url: `https://www.rottentomatoes.com/search?search=${encodeURIComponent(meta.name)}` };
+  const [rt, watching] = includeRt
+    ? await Promise.all([rottenTomatoes(meta.name, type), justWatch(meta.name, type)])
+    : [{ score: "—", audienceScore: "—", reviewCount: 0, reviews: [], url: `https://www.rottentomatoes.com/search?search=${encodeURIComponent(meta.name)}` }, { providers: [], link: null }];
   const releaseDate = meta.released ? meta.released.slice(0, 10) : "To be announced";
   const releaseIsFuture = meta.released && new Date(meta.released) > new Date();
   return {
@@ -111,6 +165,9 @@ async function cinemetaDetail(type, id, includeRt = true) {
     backdrop: meta.background || meta.poster || null,
     imdb: meta.imdbRating || "—",
     rottenTomatoes: rt.score,
+    audienceScore: rt.audienceScore,
+    audienceReviewCount: rt.reviewCount,
+    audienceReviews: rt.reviews,
     genres: meta.genres || meta.genre || [],
     runtime: meta.runtime || (type === "tv" ? "Runtime unavailable" : "—"),
     releaseDate,
@@ -121,8 +178,8 @@ async function cinemetaDetail(type, id, includeRt = true) {
     latestAirDate: latest ? (latest.firstAired || latest.released || "").slice(0, 10) : null,
     actors: (meta.cast || []).slice(0, 8).map((name) => ({ name, role: "Cast" })),
     trailer: meta.trailers?.[0]?.source ? `https://www.youtube.com/embed/${meta.trailers[0].source}?rel=0` : null,
-    providers: [],
-    providerLink: null,
+    providers: watching.providers,
+    providerLink: watching.link,
     imdbUrl: `https://www.imdb.com/title/${meta.imdb_id || id}/`,
     rottenTomatoesUrl: rt.url,
   };
@@ -191,6 +248,7 @@ async function handleDetail(type, id, res) {
     || videos.results.find((v) => v.site === "YouTube" && v.type === "Trailer");
   const region = providers.results.US || Object.values(providers.results)[0] || {};
   const rating = (omdb?.Ratings || []).find((r) => r.Source === "Rotten Tomatoes")?.Value || "—";
+  const rt = await rottenTomatoes(item.title || item.name, type);
   const released = type === "movie" ? item.release_date : item.first_air_date;
   const latest = item.last_episode_to_air;
 
@@ -203,7 +261,10 @@ async function handleDetail(type, id, res) {
     poster: item.poster_path ? `https://image.tmdb.org/t/p/w500${item.poster_path}` : null,
     backdrop: item.backdrop_path ? `https://image.tmdb.org/t/p/original${item.backdrop_path}` : null,
     imdb: omdb?.imdbRating && omdb.imdbRating !== "N/A" ? omdb.imdbRating : "—",
-    rottenTomatoes: rating,
+    rottenTomatoes: rating !== "—" ? rating : rt.score,
+    audienceScore: rt.audienceScore,
+    audienceReviewCount: rt.reviewCount,
+    audienceReviews: rt.reviews,
     genres: item.genres?.map((g) => g.name) || [],
     runtime: type === "movie" ? `${item.runtime || "—"} min` : `${item.episode_run_time?.[0] || "—"} min episodes`,
     releaseDate: released || "To be announced",
@@ -218,11 +279,13 @@ async function handleDetail(type, id, res) {
       photo: person.profile_path ? `https://image.tmdb.org/t/p/w185${person.profile_path}` : null,
     })),
     trailer: trailer ? `https://www.youtube.com/embed/${trailer.key}?rel=0` : null,
-    providers: [...(region.flatrate || []), ...(region.rent || []), ...(region.buy || [])]
+    providers: [...(region.flatrate || []).map((provider) => ({ ...provider, access: "Stream" })), ...(region.rent || []).map((provider) => ({ ...provider, access: "Rent" })), ...(region.buy || []).map((provider) => ({ ...provider, access: "Buy" }))]
       .filter((provider, index, all) => all.findIndex((p) => p.provider_id === provider.provider_id) === index)
       .map((provider) => ({
         name: provider.provider_name,
         logo: `https://image.tmdb.org/t/p/w92${provider.logo_path}`,
+        access: provider.access,
+        link: region.link || null,
       })),
     providerLink: region.link || null,
     imdbUrl: imdbId ? `https://www.imdb.com/title/${imdbId}/` : null,

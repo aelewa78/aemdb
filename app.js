@@ -57,15 +57,30 @@ const catalog = [
 ];
 
 const registry = new Map(catalog.map((item) => [`${item.type}:${item.id}`, item]));
-const state = { filter: "all", watchlist: new Set(JSON.parse(localStorage.getItem("reel-watchlist") || "[]")), searched: [] };
+const state = {
+  filter: "all",
+  searchFilter: "all",
+  watchlist: new Set(JSON.parse(localStorage.getItem("reel-watchlist") || "[]")),
+  reviews: JSON.parse(localStorage.getItem("reel-reviews") || "{}"),
+  searched: [],
+  searchRequest: 0,
+  searchAbort: null,
+};
 
 const $ = (selector, scope = document) => scope.querySelector(selector);
 const $$ = (selector, scope = document) => [...scope.querySelectorAll(selector)];
 const esc = (value = "") => String(value).replace(/[&<>'"]/g, (char) => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", "'":"&#39;", '"':"&quot;" }[char]));
 const youtubeSearch = (query) => `https://www.youtube.com/results?search_query=${encodeURIComponent(query)}`;
+const keyFor = (item) => `${item.type}:${item.id}`;
+
+function localReviewStats(key) {
+  const reviews = state.reviews[key] || [];
+  const average = reviews.length ? reviews.reduce((sum, review) => sum + Number(review.rating), 0) / reviews.length : 0;
+  return { reviews, average };
+}
 
 function cardMarkup(item, index = 0) {
-  const key = `${item.type}:${item.id}`;
+  const key = keyFor(item);
   const saved = state.watchlist.has(key);
   return `<article class="title-card" style="animation-delay:${index * 45}ms">
     <button class="save-button ${saved ? "saved" : ""}" data-save="${esc(key)}" aria-label="${saved ? "Remove from" : "Add to"} watchlist">
@@ -79,8 +94,37 @@ function cardMarkup(item, index = 0) {
   </article>`;
 }
 
+function resultCardMarkup(item, index = 0) {
+  const key = keyFor(item);
+  const saved = state.watchlist.has(key);
+  const local = localReviewStats(key);
+  return `<article class="search-result-card" data-card="${esc(key)}" style="animation-delay:${index * 35}ms">
+    <button class="result-poster" data-open="${esc(key)}" aria-label="Open ${esc(item.title)} details">
+      ${item.poster ? `<img src="${esc(item.poster)}" alt="${esc(item.title)} poster" />` : `<span class="poster-fallback">${esc(item.title.slice(0, 1))}</span>`}
+    </button>
+    <div class="result-copy">
+      <div class="result-kicker"><span>${item.type === "tv" ? "Series" : "Film"}</span><span>${esc(item.year || "TBA")}</span><span>${esc((item.genres || []).slice(0, 3).join(" · "))}</span></div>
+      <button class="result-title" data-open="${esc(key)}"><h3>${esc(item.title)}</h3></button>
+      <p>${esc(item.synopsis || "Full synopsis and release information available in details.")}</p>
+      <div class="result-availability" data-streaming>${item.providers?.length ? `Streaming on ${esc(item.providers.slice(0, 2).map((provider) => provider.name).join(" + "))}` : "Checking where to watch…"}</div>
+      <div class="result-actions"><button class="open-result" data-open="${esc(key)}">Full details <span>↗</span></button><button class="save-result ${saved ? "saved" : ""}" data-save="${esc(key)}">${saved ? "Saved ✓" : "+ Watchlist"}</button></div>
+    </div>
+    <div class="score-deck" aria-label="Ratings">
+      <div><small>IMDb</small><strong data-imdb>${esc(item.imdb || item.tmdbRating || "—")}</strong><span>/10</span></div>
+      <div><small>Audience</small><strong data-audience>${esc(item.audienceScore || "—")}</strong><span>${item.audienceReviewCount ? `${Number(item.audienceReviewCount).toLocaleString()} ratings` : "Rotten Tomatoes"}</span></div>
+      <div class="community-score"><small>Reel Finder</small><strong data-community>${local.average ? local.average.toFixed(1) : "—"}</strong><span>${local.reviews.length ? `${local.reviews.length} review${local.reviews.length === 1 ? "" : "s"}` : "Be the first"}</span></div>
+    </div>
+  </article>`;
+}
+
 function renderGrid(target, items) {
   target.innerHTML = items.length ? items.map(cardMarkup).join("") : `<div class="empty"><strong>Nothing queued yet.</strong>Save a title and it’ll wait here for movie night.</div>`;
+}
+
+function renderSearchResults() {
+  const grid = $("#resultsGrid");
+  const visible = state.searched.filter((item) => state.searchFilter === "all" || item.type === state.searchFilter);
+  grid.innerHTML = visible.length ? visible.map(resultCardMarkup).join("") : `<div class="empty"><strong>No clean match.</strong>Try another title or switch the film/series filter.</div>`;
 }
 
 function renderShelf() {
@@ -95,6 +139,7 @@ function syncWatchlist() {
     const saved = state.watchlist.has(button.dataset.save);
     button.classList.toggle("saved", saved);
     button.setAttribute("aria-label", `${saved ? "Remove from" : "Add to"} watchlist`);
+    if (button.classList.contains("save-result")) button.textContent = saved ? "Saved ✓" : "+ Watchlist";
   });
   renderGrid($("#watchlistGrid"), [...state.watchlist].map((key) => registry.get(key)).filter(Boolean));
 }
@@ -109,8 +154,34 @@ function toast(message) {
 
 function providerMarkup(provider, link) {
   const initials = provider.name.split(/\s+/).map((part) => part[0]).join("").slice(0, 2);
-  return `<a class="provider" href="${esc(link || "#")}" ${link ? 'target="_blank" rel="noreferrer"' : ""}>
-    ${provider.logo ? `<img src="${esc(provider.logo)}" alt="" />` : `<span class="avatar-fallback" style="width:38px;height:38px;font-size:13px">${esc(initials)}</span>`}<span>${esc(provider.name)}</span></a>`;
+  const target = provider.link || link;
+  return `<a class="provider" href="${esc(target || "#")}" ${target ? 'target="_blank" rel="noreferrer"' : ""}>
+    ${provider.logo ? `<img src="${esc(provider.logo)}" alt="" />` : `<span class="avatar-fallback" style="width:38px;height:38px;font-size:13px">${esc(initials)}</span>`}<span><strong>${esc(provider.name)}</strong><small>${esc(provider.access || "View options")}</small></span></a>`;
+}
+
+function reviewCardMarkup(review, local = false) {
+  return `<article class="review-card ${local ? "local-review" : ""}">
+    <div class="review-head"><span class="review-avatar">${esc((review.name || "A").split(" ").map((part) => part[0]).join("").slice(0, 2))}</span><div><strong>${esc(review.name || "Audience member")}</strong><small>${local ? "Reel Finder review" : review.verified ? "Verified audience" : "Audience review"}${review.date ? ` · ${esc(review.date)}` : ""}</small></div><span class="review-stars">★ ${esc(review.rating || "—")}/5</span></div>
+    <p>${esc(review.text)}</p>
+  </article>`;
+}
+
+function reviewsMarkup(item) {
+  const key = keyFor(item);
+  const local = localReviewStats(key);
+  const external = (item.audienceReviews || []).slice(0, 4);
+  const allReviews = [...local.reviews.map((review) => ({ ...review, local: true })), ...external];
+  return `<section class="detail-section audience-section">
+    <div class="audience-heading"><div><p class="detail-kicker">Audience notes</p><h3>User reviews</h3></div><div class="audience-big-score"><strong>${local.average ? local.average.toFixed(1) : item.audienceScore || "—"}</strong><span>${local.average ? `${local.reviews.length} Reel Finder review${local.reviews.length === 1 ? "" : "s"}` : item.audienceReviewCount ? `${Number(item.audienceReviewCount).toLocaleString()} audience ratings` : "No ratings yet"}</span></div></div>
+    <form class="review-form" data-review-form="${esc(key)}">
+      <div><label for="reviewName">Your name</label><input id="reviewName" name="name" maxlength="40" placeholder="Moviegoer" /></div>
+      <div class="rating-field"><label>Your rating</label><div class="star-picker" role="radiogroup" aria-label="Your rating out of five">${[1,2,3,4,5].map((star) => `<button type="button" data-star="${star}" aria-label="${star} star${star === 1 ? "" : "s"}">★</button>`).join("")}</div><input type="hidden" name="rating" required /></div>
+      <div class="review-text"><label for="reviewText">Your review</label><textarea id="reviewText" name="text" maxlength="500" required placeholder="What worked—or didn’t?"></textarea></div>
+      <button class="submit-review" type="submit">Publish review</button>
+    </form>
+    <div class="review-list">${allReviews.length ? allReviews.map((review) => reviewCardMarkup(review, review.local)).join("") : `<div class="no-reviews">No audience notes yet. Be the first to leave one.</div>`}</div>
+    ${external.length && item.rottenTomatoesUrl ? `<a class="all-reviews-link" href="${esc(item.rottenTomatoesUrl)}" target="_blank" rel="noreferrer">Read more audience reviews on Rotten Tomatoes ↗</a>` : ""}
+  </section>`;
 }
 
 function detailMarkup(item) {
@@ -126,7 +197,7 @@ function detailMarkup(item) {
         <h2>${esc(item.title)}</h2>
         <div class="detail-meta">${meta.map((m) => `<span>${esc(m)}</span>`).join("")}</div>
         <p class="synopsis">${esc(item.synopsis || "A synopsis is not available yet.")}</p>
-        <div class="rating-row"><span class="rating-pill"><b>IMDb</b> ${esc(item.imdb || "—")}/10</span><span class="rating-pill"><b>RT</b> ${esc(item.rottenTomatoes || "—")}</span></div>
+        <div class="rating-row"><span class="rating-pill"><b>IMDb</b> ${esc(item.imdb || "—")}/10</span><span class="rating-pill"><b>Tomatometer</b> ${esc(item.rottenTomatoes || "—")}</span><span class="rating-pill"><b>Audience</b> ${esc(item.audienceScore || "—")}</span></div>
         <div class="detail-actions">${trailer ? `<a class="primary" href="#trailer">Watch trailer ▶</a>` : trailerLink ? `<a class="primary" href="${trailerLink}" target="_blank" rel="noreferrer">Find trailer ▶</a>` : ""}<button data-save-detail="${esc(`${item.type}:${item.id}`)}">${state.watchlist.has(`${item.type}:${item.id}`) ? "Saved ✓" : "+ Watchlist"}</button></div>
       </div>
     </div>
@@ -136,10 +207,11 @@ function detailMarkup(item) {
         <section class="detail-section"><h3>Cast</h3><div class="cast-list">${actors.map((actor) => `<div class="cast-person">${actor.photo ? `<img src="${esc(actor.photo)}" alt="${esc(actor.name)}" />` : `<div class="avatar-fallback">${esc(actor.name.split(" ").map((p) => p[0]).join("").slice(0,2))}</div>`}<strong>${esc(actor.name)}</strong><span>${esc(actor.role || "")}</span></div>`).join("")}</div></section>
         ${trailer ? `<section class="detail-section" id="trailer"><h3>Trailer</h3><iframe class="trailer" src="${esc(trailer)}" title="${esc(item.title)} trailer" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe></section>` : ""}
       </div><aside>
-        <section class="detail-section"><h3>Where to watch</h3>${item.providers?.length ? `<div class="providers">${item.providers.slice(0, 7).map((provider) => providerMarkup(provider, item.providerLink)).join("")}</div><p class="source-links"><a href="${esc(`https://www.justwatch.com/us/search?q=${encodeURIComponent(item.title)}`)}" target="_blank" rel="noreferrer">Check every service ↗</a></p>` : `<div class="no-provider">No legal streaming source is listed right now. Availability changes often.<br/><a href="${esc(`https://www.justwatch.com/us/search?q=${encodeURIComponent(item.title)}`)}" target="_blank" rel="noreferrer">Check JustWatch</a> · <a href="${esc(`https://www.google.com/search?q=${encodeURIComponent(`${item.title} legal streaming`)}`)}" target="_blank" rel="noreferrer">Search legal options</a></div>`}</section>
+        <section class="detail-section"><div class="watch-heading"><h3>Where to watch</h3><span>US availability</span></div>${item.providers?.length ? `<div class="providers">${item.providers.slice(0, 10).map((provider) => providerMarkup(provider, item.providerLink)).join("")}</div><p class="source-links"><a href="${esc(item.providerLink || `https://www.justwatch.com/us/search?q=${encodeURIComponent(item.title)}`)}" target="_blank" rel="noreferrer">Compare every legal option ↗</a></p>` : `<div class="no-provider"><strong>No legal stream is listed today.</strong><br/>Availability changes often. Check again, set a release reminder, or search verified stores.<br/><a href="${esc(`https://www.justwatch.com/us/search?q=${encodeURIComponent(item.title)}`)}" target="_blank" rel="noreferrer">Check JustWatch</a> · <a href="${esc(`https://www.google.com/search?q=${encodeURIComponent(`${item.title} legal streaming`)}`)}" target="_blank" rel="noreferrer">Search legal options</a></div>`}</section>
         <section class="detail-section"><h3>Release</h3><div class="provider"><span>${esc(item.releaseDate || "To be announced")}</span></div><div class="provider"><span>${esc(item.status || "Status unknown")}</span></div></section>
         <section class="detail-section"><h3>Sources</h3><div class="source-links">${item.imdbUrl ? `<a href="${esc(item.imdbUrl)}" target="_blank" rel="noreferrer">IMDb ↗</a>` : `<a href="${esc(`https://www.imdb.com/find/?q=${encodeURIComponent(item.title)}`)}" target="_blank" rel="noreferrer">IMDb ↗</a>`}<a href="${esc(item.rottenTomatoesUrl || `https://www.rottentomatoes.com/search?search=${encodeURIComponent(item.title)}`)}" target="_blank" rel="noreferrer">Rotten Tomatoes ↗</a></div></section>
       </aside></div>
+      ${reviewsMarkup(item)}
     </div>`;
 }
 
@@ -165,18 +237,50 @@ async function openDetail(key) {
   content.innerHTML = detailMarkup(item);
 }
 
-async function search(query) {
+async function enrichSearchResults(results, requestId) {
+  await Promise.allSettled(results.slice(0, 6).map(async (item) => {
+    if (item.actors || !/^(\d+|tt\d+)$/.test(String(item.id))) return;
+    const key = keyFor(item);
+    try {
+      const response = await fetch(`/api/title/${item.type}/${item.id}`);
+      if (!response.ok || requestId !== state.searchRequest) return;
+      const detail = await response.json();
+      Object.assign(item, detail);
+      registry.set(key, item);
+      const card = document.querySelector(`[data-card="${CSS.escape(key)}"]`);
+      if (!card) return;
+      const imdb = $("[data-imdb]", card);
+      const audience = $("[data-audience]", card);
+      const streaming = $("[data-streaming]", card);
+      if (imdb) imdb.textContent = item.imdb || "—";
+      if (audience) audience.textContent = item.audienceScore || "—";
+      if (audience?.nextElementSibling) audience.nextElementSibling.textContent = item.audienceReviewCount ? `${Number(item.audienceReviewCount).toLocaleString()} ratings` : "Rotten Tomatoes";
+      if (streaming) streaming.textContent = item.providers?.length ? `Available on ${item.providers.slice(0, 3).map((provider) => provider.name).join(" · ")}` : "No legal stream currently listed";
+    } catch {
+      const card = document.querySelector(`[data-card="${CSS.escape(key)}"]`);
+      const streaming = card && $("[data-streaming]", card);
+      if (streaming) streaming.textContent = "Open for availability details";
+    }
+  }));
+}
+
+async function search(query, { scroll = true } = {}) {
   const section = $("#results");
   const grid = $("#resultsGrid");
   const status = $("#resultStatus");
+  const requestId = ++state.searchRequest;
+  state.searchAbort?.abort();
+  state.searchAbort = new AbortController();
   section.hidden = false;
   $("#resultsTitle").textContent = `“${query}”`;
-  status.textContent = "Searching the catalogue…";
-  grid.innerHTML = "";
-  section.scrollIntoView({ behavior: "smooth", block: "start" });
+  status.textContent = "Searching films and television…";
+  grid.setAttribute("aria-busy", "true");
+  grid.innerHTML = `<div class="search-skeleton"></div><div class="search-skeleton"></div><div class="search-skeleton"></div>`;
+  if (scroll) section.scrollIntoView({ behavior: "smooth", block: "start" });
   try {
-    const response = await fetch(`/api/search?q=${encodeURIComponent(query)}`);
+    const response = await fetch(`/api/search?q=${encodeURIComponent(query)}`, { signal: state.searchAbort.signal });
     const data = await response.json();
+    if (requestId !== state.searchRequest) return;
     let results = data.results || [];
     if (data.demo) {
       const needle = query.toLowerCase();
@@ -187,11 +291,14 @@ async function search(query) {
     }
     results.forEach((item) => registry.set(`${item.type}:${item.id}`, item));
     state.searched = results;
-    renderGrid(grid, results);
-    if (!results.length) grid.innerHTML = `<div class="empty"><strong>No clean match.</strong>Try the exact title, an actor, or a shorter phrase.</div>`;
-  } catch {
+    renderSearchResults();
+    grid.setAttribute("aria-busy", "false");
+    enrichSearchResults(results, requestId);
+  } catch (error) {
+    if (error.name === "AbortError") return;
     status.textContent = "Search is offline right now.";
     grid.innerHTML = `<div class="empty"><strong>The projector stalled.</strong>Check the connection and try that search again.</div>`;
+    grid.setAttribute("aria-busy", "false");
   }
 }
 
@@ -200,6 +307,8 @@ document.addEventListener("click", (event) => {
   const hero = event.target.closest("[data-title-id]");
   const save = event.target.closest("[data-save], [data-save-detail]");
   const quick = event.target.closest("[data-query]");
+  const star = event.target.closest("[data-star]");
+  const resultFilter = event.target.closest("[data-result-filter]");
   if (open) openDetail(open.dataset.open);
   if (hero) {
     const item = catalog.find((entry) => entry.id === hero.dataset.titleId);
@@ -213,7 +322,36 @@ document.addEventListener("click", (event) => {
     toast(state.watchlist.has(key) ? "Saved to your watchlist" : "Removed from your watchlist");
   }
   if (quick) { $("#searchInput").value = quick.dataset.query; search(quick.dataset.query); }
+  if (star) {
+    const picker = star.closest(".star-picker");
+    const rating = Number(star.dataset.star);
+    $$('[data-star]', picker).forEach((button) => button.classList.toggle("selected", Number(button.dataset.star) <= rating));
+    picker.nextElementSibling.value = rating;
+  }
+  if (resultFilter) {
+    state.searchFilter = resultFilter.dataset.resultFilter;
+    $$('[data-result-filter]').forEach((button) => button.classList.toggle("selected", button === resultFilter));
+    renderSearchResults();
+  }
   if (event.target.closest(".close-detail")) $("#detailDialog").close();
+});
+
+document.addEventListener("submit", (event) => {
+  const form = event.target.closest("[data-review-form]");
+  if (!form) return;
+  event.preventDefault();
+  const data = new FormData(form);
+  const rating = Number(data.get("rating"));
+  const text = String(data.get("text") || "").trim();
+  if (!rating || !text) { toast("Choose a star rating and write a short review."); return; }
+  const key = form.dataset.reviewForm;
+  const review = { name: String(data.get("name") || "Moviegoer").trim() || "Moviegoer", rating, text, date: "Just now", createdAt: Date.now() };
+  state.reviews[key] = [review, ...(state.reviews[key] || [])];
+  localStorage.setItem("reel-reviews", JSON.stringify(state.reviews));
+  const item = registry.get(key);
+  $("#detailContent").innerHTML = detailMarkup(item);
+  renderSearchResults();
+  toast("Your review is live on this device.");
 });
 
 $("#searchForm").addEventListener("submit", (event) => {
@@ -221,9 +359,16 @@ $("#searchForm").addEventListener("submit", (event) => {
   const query = $("#searchInput").value.trim();
   if (query) search(query);
 });
+let liveSearchTimer;
+$("#searchInput").addEventListener("input", (event) => {
+  clearTimeout(liveSearchTimer);
+  const query = event.target.value.trim();
+  if (query.length < 3) return;
+  liveSearchTimer = setTimeout(() => search(query, { scroll: false }), 480);
+});
 $("#detailDialog").addEventListener("close", () => { document.body.style.overflow = ""; $("#detailContent").innerHTML = ""; });
 $("#detailDialog").addEventListener("click", (event) => { if (event.target === event.currentTarget) event.currentTarget.close(); });
-$("#clearSearch").addEventListener("click", () => { $("#results").hidden = true; $("#searchInput").value = ""; $("#discover").scrollIntoView({behavior:"smooth"}); });
+$("#clearSearch").addEventListener("click", () => { state.searchAbort?.abort(); state.searched = []; $("#results").hidden = true; $("#searchInput").value = ""; $("#discover").scrollIntoView({behavior:"smooth"}); });
 $("#watchlistLink").addEventListener("click", (event) => { event.preventDefault(); const section = $("#watchlist"); section.hidden = false; syncWatchlist(); section.scrollIntoView({behavior:"smooth"}); });
 $("#randomButton").addEventListener("click", () => { const item = catalog[Math.floor(Math.random() * catalog.length)]; openDetail(`${item.type}:${item.id}`); });
 $$('[data-filter]').forEach((button) => button.addEventListener("click", () => { state.filter = button.dataset.filter; $$('[data-filter]').forEach((b) => b.classList.toggle("selected", b === button)); renderShelf(); }));

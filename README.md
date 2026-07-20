@@ -2,6 +2,8 @@
 
 A small, responsive movie and TV discovery app with a built-in demo catalogue and optional live data.
 
+Search is the primary experience: exact matches are ranked first, movie/series results appear immediately, and audience ratings plus streaming availability load progressively. Detail pages include IMDb, Tomatometer and audience scores, verified audience excerpts, trailers, cast, episodes, current US watch providers, and locally saved Reel Finder reviews.
+
 ## Run it
 
 ```bash
