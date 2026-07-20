@@ -4,6 +4,11 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="description" content="Find films and television worth your time, with ratings, cast, trailers, and streaming availability." />
+    <meta property="og:title" content="Reel Finder — What to watch, without the wandering" />
+    <meta property="og:description" content="Search films and television, compare ratings, and find where to watch." />
+    <meta property="og:type" content="website" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <link rel="canonical" href="http://localhost:4173/" id="canonicalUrl" />
     <title>Reel Finder — What to watch, without the wandering</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -30,7 +35,7 @@
     <main id="top">
       <section class="hero" id="discover">
         <div class="hero-copy">
-          <p class="eyebrow"><span></span> Freshly catalogued · <span id="today"></span></p>
+          <p class="eyebrow"><span></span> Trending now · <span id="catalogUpdated">Loading latest</span></p>
           <h1>Find the story<br />worth staying<br /><em>in for.</em></h1>
           <p class="intro">Ratings from both sides of the aisle. Trailers, cast, episodes, and exactly where it’s playing.</p>
           <form class="search" id="searchForm" role="search">
@@ -52,18 +57,18 @@
         <div class="film-strip" aria-label="New and noteworthy titles">
           <div class="strip-label"><span>NOW SHOWING</span><span>VOL. 07</span></div>
           <button class="poster poster-main" data-title-id="sinners" aria-label="Open Sinners details">
-            <img src="https://images.unsplash.com/photo-1519501025264-65ba15a82390?auto=format&fit=crop&w=1000&q=85" alt="Aerial cityscape at dusk" />
+            <img id="featuredMainImage" src="https://images.unsplash.com/photo-1519501025264-65ba15a82390?auto=format&fit=crop&w=1000&q=85" alt="Sinners artwork" />
             <span class="poster-shade"></span>
-            <span class="poster-copy"><small>#1 THIS WEEK</small><strong>SINNERS</strong><span>Drama · Thriller</span></span>
+            <span class="poster-copy"><small id="featuredMainKicker">TRENDING THIS WEEK</small><strong id="featuredMainTitle">SINNERS</strong><span id="featuredMainMeta">Drama · Thriller</span></span>
             <span class="play"><svg viewBox="0 0 24 24"><path d="m9 7 8 5-8 5z"/></svg></span>
           </button>
           <button class="poster poster-side poster-top" data-title-id="severance" aria-label="Open Severance details">
-            <img src="https://images.unsplash.com/photo-1497366811353-6870744d04b2?auto=format&fit=crop&w=700&q=85" alt="Geometric modern office" />
-            <span class="poster-shade"></span><span class="poster-copy"><small>NEW EPISODE</small><strong>SEVERANCE</strong></span>
+            <img id="featuredSideOneImage" src="https://images.unsplash.com/photo-1497366811353-6870744d04b2?auto=format&fit=crop&w=700&q=85" alt="Severance artwork" />
+            <span class="poster-shade"></span><span class="poster-copy"><small id="featuredSideOneKicker">POPULAR SERIES</small><strong id="featuredSideOneTitle">SEVERANCE</strong></span>
           </button>
           <button class="poster poster-side poster-bottom" data-title-id="mickey17" aria-label="Open Mickey 17 details">
-            <img src="https://images.unsplash.com/photo-1451187580459-43490279c0fa?auto=format&fit=crop&w=700&q=85" alt="Earth viewed from space" />
-            <span class="poster-shade"></span><span class="poster-copy"><small>JUST ADDED</small><strong>MICKEY 17</strong></span>
+            <img id="featuredSideTwoImage" src="https://images.unsplash.com/photo-1451187580459-43490279c0fa?auto=format&fit=crop&w=700&q=85" alt="Mickey 17 artwork" />
+            <span class="poster-shade"></span><span class="poster-copy"><small id="featuredSideTwoKicker">POPULAR FILM</small><strong id="featuredSideTwoTitle">MICKEY 17</strong></span>
           </button>
           <div class="frame-marks" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i></div>
         </div>
@@ -76,6 +81,15 @@
             <button class="selected" data-filter="all">Everything</button><button data-filter="movie">Films</button><button data-filter="tv">Series</button>
           </div>
         </div>
+        <div class="discovery-tools" aria-label="Refine recommendations">
+          <label>Genre<select id="genreFilter"><option value="all">Any genre</option></select></label>
+          <label>Format<select id="formatFilter"><option value="all">Films + series</option><option value="movie">Films</option><option value="tv">Series</option></select></label>
+          <label>Release<select id="yearFilter"><option value="all">Any year</option><option value="new">2020s</option><option value="modern">2000–2019</option><option value="classic">Before 2000</option></select></label>
+          <label>Runtime<select id="runtimeFilter"><option value="all">Any length</option><option value="short">Under 45 min</option><option value="medium">45–120 min</option><option value="long">Over 2 hours</option></select></label>
+          <label>Mood<select id="moodFilter"><option value="all">Any mood</option><option value="light">Light</option><option value="tense">Tense</option><option value="thoughtful">Thoughtful</option><option value="family">Family night</option></select></label>
+          <button class="pick-button" id="smartPickButton">Pick for me <span>↗</span></button>
+        </div>
+        <p class="filter-summary" id="filterSummary" role="status"></p>
         <div class="title-grid" id="titleGrid"></div>
       </section>
 
@@ -106,6 +120,13 @@
     </dialog>
 
     <div class="toast" id="toast" role="status"></div>
+    <nav class="mobile-nav" aria-label="Mobile navigation">
+      <a href="#discover">Discover</a><a href="#new">Browse</a><a href="#watchlist" id="mobileWatchlistLink">Watchlist <span id="mobileWatchCount">0</span></a>
+    </nav>
+    <section class="cookie-notice" id="cookieNotice" aria-labelledby="cookieTitle" hidden>
+      <div><strong id="cookieTitle">Your choices can stay on this device</strong><p>Reel Finder uses one consent cookie and local device storage for your watchlist, reviews, and preferences. No advertising cookies or sign-in.</p></div>
+      <div class="cookie-actions"><button id="declineCookies">Not now</button><button class="primary" id="acceptCookies">Allow device storage</button></div>
+    </section>
     <script src="app.js"></script>
   </body>
 </html>

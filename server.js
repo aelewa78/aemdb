@@ -9,6 +9,9 @@ const TMDB_TOKEN = process.env.TMDB_ACCESS_TOKEN;
 const OMDB_KEY = process.env.OMDB_API_KEY;
 const rtCache = new Map();
 const castPhotoCache = new Map();
+const watchProviderCache = new Map();
+const detailCache = new Map();
+let featuredCache = null;
 
 const mime = {
   ".html": "text/html; charset=utf-8",
@@ -46,6 +49,32 @@ async function fetchText(url, timeout = 9000) {
 
 const normalizeTitle = (value = "") => value.toLowerCase().replace(/&amp;/g, "and").replace(/&/g, "and").replace(/[^a-z0-9]+/g, " ").trim();
 const decodeText = (value = "") => value.replace(/&amp;/g, "&").replace(/&#39;/g, "'").replace(/&quot;/g, '"');
+
+function searchScore(item, query) {
+  const title = normalizeTitle(item.title);
+  const wanted = normalizeTitle(query);
+  const year = Number.parseInt(item.year, 10) || 0;
+  const currentYear = new Date().getFullYear();
+  const recency = title === wanted && year ? Math.max(0, 35 - Math.min(35, Math.abs(currentYear - year))) : 0;
+  const rating = Number.parseFloat(item.imdb || item.tmdbRating) || 0;
+  const popularity = Math.log10(Math.max(0, Number(item.popularity) || 0) + 1) * 12;
+
+  let relevance = 0;
+  if (title === wanted) relevance = 1000;
+  else if (title.startsWith(`${wanted} `)) relevance = 700;
+  else if (title.startsWith(wanted)) relevance = 620;
+  else if (title.split(" ").some((word) => word === wanted)) relevance = 420;
+  else if (title.includes(wanted)) relevance = 300;
+
+  return relevance + recency + rating * 2 + popularity;
+}
+
+function rankSearchResults(results, query) {
+  return results
+    .map((item, index) => ({ item, index, score: searchScore(item, query) }))
+    .sort((a, b) => b.score - a.score || a.index - b.index)
+    .map(({ item }) => item);
+}
 
 async function castProfile(name) {
   if (castPhotoCache.has(name)) return castPhotoCache.get(name);
@@ -108,6 +137,9 @@ async function rottenTomatoes(title, type) {
 }
 
 async function justWatch(title, type, country = "US") {
+  const cacheKey = `${country}:${type}:${normalizeTitle(title)}`;
+  const cached = watchProviderCache.get(cacheKey);
+  if (cached && Date.now() - cached.cachedAt < 60 * 60 * 1000) return cached.value;
   const query = `query Search($filter:TitleFilter!,$country:Country!,$language:Language!,$first:Int!,$platform:Platform!){popularTitles(country:$country,filter:$filter,first:$first){edges{node{id objectType content(country:$country,language:$language){title fullPath} offers(country:$country,platform:$platform){monetizationType standardWebURL package{clearName icon}}}}}}`;
   try {
     const response = await fetch("https://apis.justwatch.com/graphql", {
@@ -122,13 +154,13 @@ async function justWatch(title, type, country = "US") {
     const wantedType = type === "movie" ? "MOVIE" : "SHOW";
     const exact = edges.find(({ node }) => node.objectType === wantedType && normalizeTitle(node.content?.title) === normalizeTitle(title));
     const match = exact || edges.find(({ node }) => node.objectType === wantedType);
-    if (!match) return { providers: [], link: null };
+    if (!match) return { providers: [], link: null, status: "none", lastChecked: new Date().toISOString() };
     const priority = { FREE: 0, ADS: 1, FLATRATE: 2, RENT: 3, BUY: 4 };
     const offers = (match.node.offers || [])
       .filter((offer) => offer.package?.clearName && offer.standardWebURL)
       .sort((a, b) => (priority[a.monetizationType] ?? 9) - (priority[b.monetizationType] ?? 9));
     const unique = offers.filter((offer, index, all) => all.findIndex((item) => item.package.clearName === offer.package.clearName && item.monetizationType === offer.monetizationType) === index);
-    return {
+    const value = {
       providers: unique.slice(0, 10).map((offer) => ({
         name: offer.package.clearName,
         access: offer.monetizationType === "FLATRATE" ? "Stream" : offer.monetizationType === "ADS" ? "Free with ads" : offer.monetizationType === "FREE" ? "Free" : offer.monetizationType === "RENT" ? "Rent" : "Buy",
@@ -136,10 +168,14 @@ async function justWatch(title, type, country = "US") {
         logo: offer.package.icon ? `https://images.justwatch.com${offer.package.icon.replace("{profile}", "s100").replace("{format}", "png")}` : null,
       })),
       link: `https://www.justwatch.com${match.node.content?.fullPath || `/us/search?q=${encodeURIComponent(title)}`}`,
+      status: unique.length ? "available" : "none",
+      lastChecked: new Date().toISOString(),
     };
+    watchProviderCache.set(cacheKey, { cachedAt: Date.now(), value });
+    return value;
   } catch (error) {
     console.error("JustWatch lookup failed:", error);
-    return { providers: [], link: null };
+    return { providers: [], link: null, status: "unavailable", lastChecked: new Date().toISOString() };
   }
 }
 
@@ -157,8 +193,65 @@ async function cinemetaSearch(query, type) {
     backdrop: item.background || null,
     imdb: item.imdbRating || null,
     genres: item.genres || [],
+    runtime: item.runtime || null,
     popularity: item.popularity || item.popularities?.stremio || 0,
   }));
+}
+
+async function cinemetaFeatured(type) {
+  const remoteType = type === "tv" ? "series" : "movie";
+  const data = JSON.parse(await fetchText(`https://v3-cinemeta.strem.io/catalog/${remoteType}/top.json`));
+  return (data.metas || []).slice(0, 12).map((item) => ({
+    id: item.id,
+    type,
+    title: item.name,
+    year: (item.releaseInfo || "").replace(/–|-$/, "") || "TBA",
+    synopsis: item.description || "",
+    poster: item.poster || null,
+    backdrop: item.background || null,
+    imdb: item.imdbRating || null,
+    genres: item.genres || [],
+    popularity: item.popularity || item.popularities?.stremio || 0,
+  }));
+}
+
+async function handleFeatured(res) {
+  if (featuredCache && Date.now() - featuredCache.cachedAt < 30 * 60 * 1000) {
+    return json(res, 200, featuredCache.payload);
+  }
+
+  let items;
+  if (TMDB_TOKEN) {
+    const data = await tmdb("/trending/all/week", { language: "en-US" });
+    items = data.results
+      .filter((item) => item.media_type === "movie" || item.media_type === "tv")
+      .slice(0, 18)
+      .map((item) => ({
+        id: String(item.id),
+        type: item.media_type,
+        title: item.title || item.name,
+        year: (item.release_date || item.first_air_date || "").slice(0, 4) || "TBA",
+        synopsis: item.overview || "",
+        poster: item.poster_path ? `https://image.tmdb.org/t/p/w500${item.poster_path}` : null,
+        backdrop: item.backdrop_path ? `https://image.tmdb.org/t/p/w1280${item.backdrop_path}` : null,
+        tmdbRating: item.vote_average ? item.vote_average.toFixed(1) : null,
+        genres: [],
+        popularity: item.popularity || 0,
+      }));
+  } else {
+    const results = await Promise.allSettled([cinemetaFeatured("movie"), cinemetaFeatured("tv")]);
+    const movies = results[0].status === "fulfilled" ? results[0].value : [];
+    const series = results[1].status === "fulfilled" ? results[1].value : [];
+    items = Array.from({ length: Math.max(movies.length, series.length) }, (_, index) => [movies[index], series[index]])
+      .flat()
+      .filter(Boolean)
+      .slice(0, 18);
+  }
+
+  if (!items.length) throw new Error("The trending catalogue is unavailable.");
+  const payload = { updatedAt: new Date().toISOString(), items };
+  featuredCache = { cachedAt: Date.now(), payload };
+  return json(res, 200, payload);
 }
 
 async function cinemetaDetail(type, id, includeRt = true) {
@@ -201,6 +294,8 @@ async function cinemetaDetail(type, id, includeRt = true) {
     trailer: meta.trailers?.[0]?.source ? `https://www.youtube.com/embed/${meta.trailers[0].source}?rel=0` : null,
     providers: watching.providers,
     providerLink: watching.link,
+    providerStatus: watching.status,
+    lastChecked: watching.lastChecked,
     imdbUrl: `https://www.imdb.com/title/${meta.imdb_id || id}/`,
     rottenTomatoesUrl: rt.url,
   };
@@ -216,25 +311,12 @@ async function handleSearch(url, res) {
     });
     let results = searches.flatMap((result) => result.status === "fulfilled" ? result.value : []);
     if (!results.length) return json(res, 200, { source: "cinemeta", results: [] });
-    const wanted = normalizeTitle(query);
-    results.sort((a, b) => {
-      const score = (item) => normalizeTitle(item.title) === wanted ? 1000 : normalizeTitle(item.title).startsWith(wanted) ? 500 : 0;
-      return score(b) - score(a) || Number(b.popularity || 0) - Number(a.popularity || 0);
-    });
-    results = results.slice(0, 12);
-    const enriched = await Promise.all(results.map(async (result, index) => {
-      if (index >= 4) return result;
-      try {
-        const detail = await cinemetaDetail(result.type, result.id, false);
-        return { ...result, synopsis: detail.synopsis, imdb: detail.imdb, genres: detail.genres, runtime: detail.runtime };
-      } catch { return result; }
-    }));
-    return json(res, 200, { source: "cinemeta", results: enriched });
+    results = rankSearchResults(results, query).slice(0, 12);
+    return json(res, 200, { source: "cinemeta", results });
   }
   const data = await tmdb("/search/multi", { query, include_adult: "false", language: "en-US" });
-  const results = data.results
+  const results = rankSearchResults(data.results
     .filter((item) => item.media_type === "movie" || item.media_type === "tv")
-    .slice(0, 12)
     .map((item) => ({
       id: String(item.id),
       type: item.media_type,
@@ -244,7 +326,8 @@ async function handleSearch(url, res) {
       poster: item.poster_path ? `https://image.tmdb.org/t/p/w500${item.poster_path}` : null,
       backdrop: item.backdrop_path ? `https://image.tmdb.org/t/p/w1280${item.backdrop_path}` : null,
       tmdbRating: item.vote_average ? item.vote_average.toFixed(1) : "—",
-    }));
+      popularity: item.popularity || 0,
+    })), query).slice(0, 12);
   json(res, 200, { results });
 }
 
@@ -273,7 +356,7 @@ async function handleDetail(type, id, res) {
   const released = type === "movie" ? item.release_date : item.first_air_date;
   const latest = item.last_episode_to_air;
 
-  json(res, 200, {
+  return {
     id: String(item.id),
     type,
     title: item.title || item.name,
@@ -309,9 +392,20 @@ async function handleDetail(type, id, res) {
         link: region.link || null,
       })),
     providerLink: region.link || null,
+    providerStatus: region.flatrate?.length || region.rent?.length || region.buy?.length ? "available" : "none",
+    lastChecked: new Date().toISOString(),
     imdbUrl: imdbId ? `https://www.imdb.com/title/${imdbId}/` : null,
     rottenTomatoesUrl: `https://www.rottentomatoes.com/search?search=${encodeURIComponent(item.title || item.name)}`,
-  });
+  };
+}
+
+async function cachedDetail(type, id) {
+  const key = `${type}:${id}`;
+  const cached = detailCache.get(key);
+  if (cached && Date.now() - cached.cachedAt < 30 * 60 * 1000) return cached.value;
+  const value = !TMDB_TOKEN || id.startsWith("tt") ? await cinemetaDetail(type, id) : await handleDetail(type, id);
+  detailCache.set(key, { cachedAt: Date.now(), value });
+  return value;
 }
 
 function serveFile(pathname, res) {
@@ -333,11 +427,11 @@ function serveFile(pathname, res) {
 async function requestHandler(req, res) {
   try {
     const url = new URL(req.url, `http://${req.headers.host}`);
+    if (url.pathname === "/api/featured") return await handleFeatured(res);
     if (url.pathname === "/api/search") return await handleSearch(url, res);
     const match = url.pathname.match(/^\/api\/title\/(movie|tv)\/(\d+|tt\d+)$/);
     if (match) {
-      if (!TMDB_TOKEN || match[2].startsWith("tt")) return json(res, 200, await cinemetaDetail(match[1], match[2]));
-      return await handleDetail(match[1], match[2], res);
+      return json(res, 200, await cachedDetail(match[1], match[2]));
     }
     serveFile(url.pathname, res);
   } catch (error) {

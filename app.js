@@ -7,7 +7,7 @@ const IMG = {
   noir: "https://images.unsplash.com/photo-1519608487953-e999c86e7455?auto=format&fit=crop&w=900&q=82",
 };
 
-const catalog = [
+let catalog = [
   {
     id: "sinners", type: "movie", title: "Sinners", year: "2025", genres: ["Horror", "Drama"], runtime: "2h 17m",
     releaseDate: "2025-04-18", status: "Released", imdb: "7.5", rottenTomatoes: "97%", tmdbRating: "7.6",
@@ -57,11 +57,17 @@ const catalog = [
 ];
 
 const registry = new Map(catalog.map((item) => [`${item.type}:${item.id}`, item]));
+const hasStorageConsent = () => document.cookie.split("; ").some((part) => part === "reel_storage_consent=accepted");
+const readStored = (key, fallback) => {
+  if (!hasStorageConsent()) return fallback;
+  try { return JSON.parse(localStorage.getItem(key) || JSON.stringify(fallback)); } catch { return fallback; }
+};
 const state = {
   filter: "all",
   searchFilter: "all",
-  watchlist: new Set(JSON.parse(localStorage.getItem("reel-watchlist") || "[]")),
-  reviews: JSON.parse(localStorage.getItem("reel-reviews") || "{}"),
+  watchlist: new Set(readStored("reel-watchlist", [])),
+  reviews: readStored("reel-reviews", {}),
+  preferences: readStored("reel-preferences", { genre: "all", format: "all", year: "all", runtime: "all", mood: "all" }),
   searched: [],
   searchRequest: 0,
   searchAbort: null,
@@ -128,13 +134,76 @@ function renderSearchResults() {
 }
 
 function renderShelf() {
-  const items = catalog.filter((item) => state.filter === "all" || item.type === state.filter);
+  const preferences = state.preferences;
+  const moodGenres = { light: ["Comedy", "Romance", "Music"], tense: ["Thriller", "Horror", "Crime", "Mystery"], thoughtful: ["Drama", "Documentary", "Sci-Fi"], family: ["Family", "Animation", "Adventure"] };
+  const runtimeMinutes = (value = "") => {
+    const hours = Number(value.match(/(\d+)h/)?.[1] || 0);
+    const minutes = Number(value.match(/(\d+)\s*min/)?.[1] || 0);
+    return hours * 60 + minutes;
+  };
+  const items = catalog.filter((item) => {
+    const year = Number.parseInt(item.year, 10) || 0;
+    const minutes = runtimeMinutes(item.runtime);
+    const genres = item.genres || [];
+    return (state.filter === "all" || item.type === state.filter)
+      && (preferences.format === "all" || item.type === preferences.format)
+      && (preferences.genre === "all" || genres.includes(preferences.genre))
+      && (preferences.year === "all" || preferences.year === "new" && year >= 2020 || preferences.year === "modern" && year >= 2000 && year < 2020 || preferences.year === "classic" && year && year < 2000)
+      && (preferences.runtime === "all" || !minutes || preferences.runtime === "short" && minutes < 45 || preferences.runtime === "medium" && minutes >= 45 && minutes <= 120 || preferences.runtime === "long" && minutes > 120)
+      && (preferences.mood === "all" || moodGenres[preferences.mood].some((genre) => genres.includes(genre)));
+  });
   renderGrid($("#titleGrid"), items);
+  $("#filterSummary").textContent = `${items.length} recommendation${items.length === 1 ? "" : "s"} match your choices${preferences.runtime !== "all" && items.some((item) => !item.runtime) ? "; titles without runtime data remain included" : ""}.`;
+  return items;
+}
+
+function setFeaturedPoster(button, image, titleNode, kickerNode, item, kicker) {
+  if (!button || !image || !titleNode || !item) return;
+  button.dataset.titleId = item.id;
+  button.setAttribute("aria-label", `Open ${item.title} details`);
+  image.src = item.backdrop || item.poster || IMG.studio;
+  image.alt = `${item.title} artwork`;
+  titleNode.textContent = item.title.toUpperCase();
+  if (kickerNode) kickerNode.textContent = kicker;
+}
+
+function renderFeatured(items, updatedAt) {
+  if (!items.length) return;
+  catalog = items;
+  items.forEach((item) => registry.set(keyFor(item), item));
+  const main = items[0];
+  const sideOne = items.find((item, index) => index > 0 && item.type !== main.type) || items[1];
+  const sideTwo = items.find((item, index) => index > 0 && item !== sideOne && item.type === main.type) || items[2];
+  setFeaturedPoster($(".poster-main"), $("#featuredMainImage"), $("#featuredMainTitle"), $("#featuredMainKicker"), main, "TRENDING THIS WEEK");
+  setFeaturedPoster($(".poster-top"), $("#featuredSideOneImage"), $("#featuredSideOneTitle"), $("#featuredSideOneKicker"), sideOne, sideOne.type === "tv" ? "POPULAR SERIES" : "POPULAR FILM");
+  setFeaturedPoster($(".poster-bottom"), $("#featuredSideTwoImage"), $("#featuredSideTwoTitle"), $("#featuredSideTwoKicker"), sideTwo, sideTwo.type === "tv" ? "POPULAR SERIES" : "POPULAR FILM");
+  $("#featuredMainMeta").textContent = [main.year, ...(main.genres || []).slice(0, 2)].filter(Boolean).join(" · ");
+  $("#catalogUpdated").textContent = `Updated ${new Intl.DateTimeFormat("en", { hour: "numeric", minute: "2-digit" }).format(new Date(updatedAt))}`;
+  const genres = [...new Set(items.flatMap((item) => item.genres || []))].sort();
+  $("#genreFilter").innerHTML = `<option value="all">Any genre</option>${genres.map((genre) => `<option value="${esc(genre)}">${esc(genre)}</option>`).join("")}`;
+  Object.entries(state.preferences).forEach(([name, value]) => {
+    const control = $(`#${name}Filter`);
+    if (control && [...control.options].some((option) => option.value === value)) control.value = value;
+  });
+  renderShelf();
+  syncWatchlist();
+}
+
+async function loadFeatured() {
+  try {
+    const response = await fetch("/api/featured");
+    if (!response.ok) throw new Error();
+    const data = await response.json();
+    renderFeatured(data.items || [], data.updatedAt);
+  } catch {
+    $("#catalogUpdated").textContent = "Curated offline edition";
+  }
 }
 
 function syncWatchlist() {
-  localStorage.setItem("reel-watchlist", JSON.stringify([...state.watchlist]));
+  if (hasStorageConsent()) localStorage.setItem("reel-watchlist", JSON.stringify([...state.watchlist]));
   $("#watchCount").textContent = state.watchlist.size;
+  $("#mobileWatchCount").textContent = state.watchlist.size;
   $$('[data-save]').forEach((button) => {
     const saved = state.watchlist.has(button.dataset.save);
     button.classList.toggle("saved", saved);
@@ -175,7 +244,7 @@ function reviewsMarkup(item) {
     <div class="audience-heading"><div><p class="detail-kicker">Audience notes</p><h3>User reviews</h3></div><div class="audience-big-score"><strong>${local.average ? local.average.toFixed(1) : item.audienceScore || "—"}</strong><span>${local.average ? `${local.reviews.length} Reel Finder review${local.reviews.length === 1 ? "" : "s"}` : item.audienceReviewCount ? `${Number(item.audienceReviewCount).toLocaleString()} audience ratings` : "No ratings yet"}</span></div></div>
     <form class="review-form" data-review-form="${esc(key)}">
       <div><label for="reviewName">Your name</label><input id="reviewName" name="name" maxlength="40" placeholder="Moviegoer" /></div>
-      <div class="rating-field"><label>Your rating</label><div class="star-picker" role="radiogroup" aria-label="Your rating out of five">${[1,2,3,4,5].map((star) => `<button type="button" data-star="${star}" aria-label="${star} star${star === 1 ? "" : "s"}">★</button>`).join("")}</div><input type="hidden" name="rating" required /></div>
+      <div class="rating-field"><label>Your rating</label><div class="star-picker" role="radiogroup" aria-label="Your rating out of five">${[1,2,3,4,5].map((star) => `<button type="button" role="radio" aria-checked="false" data-star="${star}" aria-label="${star} star${star === 1 ? "" : "s"}">★</button>`).join("")}</div><input type="hidden" name="rating" required /></div>
       <div class="review-text"><label for="reviewText">Your review</label><textarea id="reviewText" name="text" maxlength="500" required placeholder="What worked—or didn’t?"></textarea></div>
       <button class="submit-review" type="submit">Publish review</button>
     </form>
@@ -198,7 +267,7 @@ function detailMarkup(item) {
         <div class="detail-meta">${meta.map((m) => `<span>${esc(m)}</span>`).join("")}</div>
         <p class="synopsis">${esc(item.synopsis || "A synopsis is not available yet.")}</p>
         <div class="rating-row"><span class="rating-pill"><b>IMDb</b> ${esc(item.imdb || "—")}/10</span><span class="rating-pill"><b>Tomatometer</b> ${esc(item.rottenTomatoes || "—")}</span><span class="rating-pill"><b>Audience</b> ${esc(item.audienceScore || "—")}</span></div>
-        <div class="detail-actions">${trailer ? `<a class="primary" href="#trailer">Watch trailer ▶</a>` : trailerLink ? `<a class="primary" href="${trailerLink}" target="_blank" rel="noreferrer">Find trailer ▶</a>` : ""}<button data-save-detail="${esc(`${item.type}:${item.id}`)}">${state.watchlist.has(`${item.type}:${item.id}`) ? "Saved ✓" : "+ Watchlist"}</button></div>
+        <div class="detail-actions">${trailer ? `<a class="primary" href="#trailer">Watch trailer ▶</a>` : trailerLink ? `<a class="primary" href="${trailerLink}" target="_blank" rel="noreferrer">Find trailer ▶</a>` : ""}<button data-save-detail="${esc(`${item.type}:${item.id}`)}">${state.watchlist.has(`${item.type}:${item.id}`) ? "Saved ✓" : "+ Watchlist"}</button><button data-share="${esc(`${item.type}:${item.id}`)}">Share ↗</button></div>
       </div>
     </div>
     <div class="detail-body">
@@ -207,7 +276,7 @@ function detailMarkup(item) {
         <section class="detail-section"><h3>Cast</h3><div class="cast-list">${actors.map((actor) => `<div class="cast-person">${actor.photo ? `<img src="${esc(actor.photo)}" alt="${esc(actor.name)}" />` : `<div class="avatar-fallback">${esc(actor.name.split(" ").map((p) => p[0]).join("").slice(0,2))}</div>`}<strong>${esc(actor.name)}</strong><span>${esc(actor.role || "")}</span></div>`).join("")}</div></section>
         ${trailer ? `<section class="detail-section" id="trailer"><h3>Trailer</h3><iframe class="trailer" src="${esc(trailer)}" title="${esc(item.title)} trailer" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe></section>` : ""}
       </div><aside>
-        <section class="detail-section"><div class="watch-heading"><h3>Where to watch</h3><span>US availability</span></div>${item.providers?.length ? `<div class="providers">${item.providers.slice(0, 10).map((provider) => providerMarkup(provider, item.providerLink)).join("")}</div><p class="source-links"><a href="${esc(item.providerLink || `https://www.justwatch.com/us/search?q=${encodeURIComponent(item.title)}`)}" target="_blank" rel="noreferrer">Compare every legal option ↗</a></p>` : `<div class="no-provider"><strong>No legal stream is listed today.</strong><br/>Availability changes often. Check again, set a release reminder, or search verified stores.<br/><a href="${esc(`https://www.justwatch.com/us/search?q=${encodeURIComponent(item.title)}`)}" target="_blank" rel="noreferrer">Check JustWatch</a> · <a href="${esc(`https://www.google.com/search?q=${encodeURIComponent(`${item.title} legal streaming`)}`)}" target="_blank" rel="noreferrer">Search legal options</a></div>`}</section>
+        <section class="detail-section"><div class="watch-heading"><h3>Where to watch</h3><span>US · ${item.lastChecked ? `checked ${esc(new Intl.DateTimeFormat("en", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }).format(new Date(item.lastChecked)))}` : "availability"}</span></div>${item.providers?.length ? `<div class="providers">${item.providers.slice(0, 10).map((provider) => providerMarkup(provider, item.providerLink)).join("")}</div><p class="source-links"><a href="${esc(item.providerLink || `https://www.justwatch.com/us/search?q=${encodeURIComponent(item.title)}`)}" target="_blank" rel="noreferrer">Compare every legal option ↗</a></p>` : item.providerStatus === "unavailable" ? `<div class="no-provider"><strong>Availability couldn’t be checked.</strong><br/>The catalogue source did not respond. Try again later or check JustWatch directly.<br/><a href="${esc(`https://www.justwatch.com/us/search?q=${encodeURIComponent(item.title)}`)}" target="_blank" rel="noreferrer">Check JustWatch</a></div>` : `<div class="no-provider"><strong>No legal stream is currently listed.</strong><br/>Availability changes often. Check again or search verified stores.<br/><a href="${esc(`https://www.justwatch.com/us/search?q=${encodeURIComponent(item.title)}`)}" target="_blank" rel="noreferrer">Check JustWatch</a> · <a href="${esc(`https://www.google.com/search?q=${encodeURIComponent(`${item.title} legal streaming`)}`)}" target="_blank" rel="noreferrer">Search legal options</a></div>`}</section>
         <section class="detail-section"><h3>Release</h3><div class="provider"><span>${esc(item.releaseDate || "To be announced")}</span></div><div class="provider"><span>${esc(item.status || "Status unknown")}</span></div></section>
         <section class="detail-section"><h3>Sources</h3><div class="source-links">${item.imdbUrl ? `<a href="${esc(item.imdbUrl)}" target="_blank" rel="noreferrer">IMDb ↗</a>` : `<a href="${esc(`https://www.imdb.com/find/?q=${encodeURIComponent(item.title)}`)}" target="_blank" rel="noreferrer">IMDb ↗</a>`}<a href="${esc(item.rottenTomatoesUrl || `https://www.rottentomatoes.com/search?search=${encodeURIComponent(item.title)}`)}" target="_blank" rel="noreferrer">Rotten Tomatoes ↗</a></div></section>
       </aside></div>
@@ -215,14 +284,34 @@ function detailMarkup(item) {
     </div>`;
 }
 
-async function openDetail(key) {
+function syncTitleMetadata(item, push = true) {
+  const url = new URL(location.href);
+  url.searchParams.set("title", keyFor(item));
+  history[push ? "pushState" : "replaceState"]({ title: keyFor(item) }, "", url);
+  document.title = `${item.title} — Reel Finder`;
+  document.querySelector('meta[name="description"]').content = item.synopsis || `Ratings and streaming availability for ${item.title}.`;
+  document.querySelector('meta[property="og:title"]').content = `${item.title} — Reel Finder`;
+  document.querySelector('meta[property="og:description"]').content = item.synopsis || `See where to watch ${item.title}.`;
+  $("#canonicalUrl").href = url.href;
+  let structured = $("#titleStructuredData");
+  if (!structured) { structured = document.createElement("script"); structured.id = "titleStructuredData"; structured.type = "application/ld+json"; document.head.append(structured); }
+  structured.textContent = JSON.stringify({ "@context": "https://schema.org", "@type": item.type === "tv" ? "TVSeries" : "Movie", name: item.title, dateCreated: item.year, description: item.synopsis, image: item.poster || item.backdrop });
+}
+
+function resetTitleMetadata() {
+  const url = new URL(location.href); url.searchParams.delete("title"); history.replaceState({}, "", url);
+  document.title = "Reel Finder — What to watch, without the wandering";
+  $("#canonicalUrl").href = `${location.origin}${location.pathname}`;
+  $("#titleStructuredData")?.remove();
+}
+
+async function openDetail(key, { updateUrl = true } = {}) {
   const dialog = $("#detailDialog");
   const content = $("#detailContent");
   let item = registry.get(key);
   dialog.showModal();
   document.body.style.overflow = "hidden";
-  if (!item) return;
-  if (/^(movie|tv):(\d+|tt\d+)$/.test(key) && !item.actors) {
+  if (/^(movie|tv):(\d+|tt\d+)$/.test(key) && (!item || !item.actors)) {
     content.innerHTML = `<div class="dialog-loading">THREADING THE REEL…</div>`;
     try {
       const [type, id] = key.split(":");
@@ -234,7 +323,9 @@ async function openDetail(key) {
       toast("Details couldn’t be loaded. Try again shortly.");
     }
   }
+  if (!item) { dialog.close(); return; }
   content.innerHTML = detailMarkup(item);
+  syncTitleMetadata(item, updateUrl);
 }
 
 async function enrichSearchResults(results, requestId) {
@@ -287,13 +378,15 @@ async function search(query, { scroll = true } = {}) {
       results = catalog.filter((item) => [item.title, item.synopsis, ...(item.genres || []), ...(item.actors || []).flatMap((a) => [a.name, a.role])].join(" ").toLowerCase().includes(needle));
       status.textContent = results.length ? `${results.length} demo-catalog match${results.length === 1 ? "" : "es"}. Add TMDB and OMDb keys for live search.` : "No demo matches. Add API keys to search the full catalogue.";
     } else {
-      status.textContent = `${results.length} live match${results.length === 1 ? "" : "es"}, ranked by title relevance.`;
+      status.textContent = `${results.length} match${results.length === 1 ? "" : "es"}, best match first. Ratings and availability are still loading.`;
     }
     results.forEach((item) => registry.set(`${item.type}:${item.id}`, item));
     state.searched = results;
     renderSearchResults();
     grid.setAttribute("aria-busy", "false");
-    enrichSearchResults(results, requestId);
+    enrichSearchResults(results, requestId).then(() => {
+      if (requestId === state.searchRequest) status.textContent = `${results.length} match${results.length === 1 ? "" : "es"}, best match first.`;
+    });
   } catch (error) {
     if (error.name === "AbortError") return;
     status.textContent = "Search is offline right now.";
@@ -309,6 +402,7 @@ document.addEventListener("click", (event) => {
   const quick = event.target.closest("[data-query]");
   const star = event.target.closest("[data-star]");
   const resultFilter = event.target.closest("[data-result-filter]");
+  const share = event.target.closest("[data-share]");
   if (open) openDetail(open.dataset.open);
   if (hero) {
     const item = catalog.find((entry) => entry.id === hero.dataset.titleId);
@@ -325,13 +419,23 @@ document.addEventListener("click", (event) => {
   if (star) {
     const picker = star.closest(".star-picker");
     const rating = Number(star.dataset.star);
-    $$('[data-star]', picker).forEach((button) => button.classList.toggle("selected", Number(button.dataset.star) <= rating));
+    $$('[data-star]', picker).forEach((button) => {
+      button.classList.toggle("selected", Number(button.dataset.star) <= rating);
+      button.setAttribute("aria-checked", String(Number(button.dataset.star) === rating));
+    });
     picker.nextElementSibling.value = rating;
   }
   if (resultFilter) {
     state.searchFilter = resultFilter.dataset.resultFilter;
     $$('[data-result-filter]').forEach((button) => button.classList.toggle("selected", button === resultFilter));
     renderSearchResults();
+  }
+  if (share) {
+    const item = registry.get(share.dataset.share);
+    const shareUrl = new URL(location.href);
+    shareUrl.searchParams.set("title", share.dataset.share);
+    if (navigator.share) navigator.share({ title: `${item?.title || "Title"} — Reel Finder`, text: item?.synopsis || "See ratings and where to watch.", url: shareUrl.href }).catch(() => {});
+    else navigator.clipboard?.writeText(shareUrl.href).then(() => toast("Share link copied"));
   }
   if (event.target.closest(".close-detail")) $("#detailDialog").close();
 });
@@ -347,7 +451,7 @@ document.addEventListener("submit", (event) => {
   const key = form.dataset.reviewForm;
   const review = { name: String(data.get("name") || "Moviegoer").trim() || "Moviegoer", rating, text, date: "Just now", createdAt: Date.now() };
   state.reviews[key] = [review, ...(state.reviews[key] || [])];
-  localStorage.setItem("reel-reviews", JSON.stringify(state.reviews));
+  if (hasStorageConsent()) localStorage.setItem("reel-reviews", JSON.stringify(state.reviews));
   const item = registry.get(key);
   $("#detailContent").innerHTML = detailMarkup(item);
   renderSearchResults();
@@ -366,13 +470,49 @@ $("#searchInput").addEventListener("input", (event) => {
   if (query.length < 3) return;
   liveSearchTimer = setTimeout(() => search(query, { scroll: false }), 480);
 });
-$("#detailDialog").addEventListener("close", () => { document.body.style.overflow = ""; $("#detailContent").innerHTML = ""; });
+$("#detailDialog").addEventListener("close", () => { document.body.style.overflow = ""; $("#detailContent").innerHTML = ""; resetTitleMetadata(); });
 $("#detailDialog").addEventListener("click", (event) => { if (event.target === event.currentTarget) event.currentTarget.close(); });
 $("#clearSearch").addEventListener("click", () => { state.searchAbort?.abort(); state.searched = []; $("#results").hidden = true; $("#searchInput").value = ""; $("#discover").scrollIntoView({behavior:"smooth"}); });
 $("#watchlistLink").addEventListener("click", (event) => { event.preventDefault(); const section = $("#watchlist"); section.hidden = false; syncWatchlist(); section.scrollIntoView({behavior:"smooth"}); });
+$("#mobileWatchlistLink").addEventListener("click", (event) => { event.preventDefault(); $("#watchlistLink").click(); });
 $("#randomButton").addEventListener("click", () => { const item = catalog[Math.floor(Math.random() * catalog.length)]; openDetail(`${item.type}:${item.id}`); });
+$("#smartPickButton").addEventListener("click", () => {
+  const matches = renderShelf();
+  if (!matches.length) { toast("No title matches every choice yet. Try widening one filter."); return; }
+  openDetail(keyFor(matches[Math.floor(Math.random() * matches.length)]));
+});
 $$('[data-filter]').forEach((button) => button.addEventListener("click", () => { state.filter = button.dataset.filter; $$('[data-filter]').forEach((b) => b.classList.toggle("selected", b === button)); renderShelf(); }));
 
-$("#today").textContent = new Intl.DateTimeFormat("en", { month: "short", day: "numeric" }).format(new Date()).toUpperCase();
+[$("#genreFilter"), $("#formatFilter"), $("#yearFilter"), $("#runtimeFilter"), $("#moodFilter")].forEach((control) => control.addEventListener("change", () => {
+  state.preferences = { genre: $("#genreFilter").value, format: $("#formatFilter").value, year: $("#yearFilter").value, runtime: $("#runtimeFilter").value, mood: $("#moodFilter").value };
+  if (hasStorageConsent()) localStorage.setItem("reel-preferences", JSON.stringify(state.preferences));
+  renderShelf();
+}));
+
+const cookieNotice = $("#cookieNotice");
+if (!document.cookie.split("; ").some((part) => part.startsWith("reel_storage_consent="))) cookieNotice.hidden = false;
+$("#acceptCookies").addEventListener("click", () => {
+  document.cookie = "reel_storage_consent=accepted; Max-Age=31536000; Path=/; SameSite=Lax";
+  localStorage.setItem("reel-watchlist", JSON.stringify([...state.watchlist]));
+  localStorage.setItem("reel-reviews", JSON.stringify(state.reviews));
+  localStorage.setItem("reel-preferences", JSON.stringify(state.preferences));
+  cookieNotice.hidden = true;
+  toast("Device storage allowed");
+});
+$("#declineCookies").addEventListener("click", () => {
+  document.cookie = "reel_storage_consent=declined; Max-Age=2592000; Path=/; SameSite=Lax";
+  cookieNotice.hidden = true;
+  toast("Choices will last only for this visit");
+});
+
+window.addEventListener("popstate", () => {
+  const key = new URL(location.href).searchParams.get("title");
+  if (key) openDetail(key, { updateUrl: false });
+  else if ($("#detailDialog").open) $("#detailDialog").close();
+});
+
 renderShelf();
 syncWatchlist();
+loadFeatured();
+const initialTitle = new URL(location.href).searchParams.get("title");
+if (initialTitle) openDetail(initialTitle, { updateUrl: false });
