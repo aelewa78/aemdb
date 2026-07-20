@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="description" content="Find films and television worth your time, with ratings, cast, trailers, and streaming availability." />
+    <title>Reel Finder — What to watch, without the wandering</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Manrope:wght@400;500;600;700&family=Newsreader:opsz,wght@6..72,500;6..72,600&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div class="grain" aria-hidden="true"></div>
+    <header class="topbar">
+      <a class="brand" href="#top" aria-label="Reel Finder home">
+        <svg viewBox="0 0 34 34" aria-hidden="true"><circle cx="17" cy="17" r="15"/><circle cx="17" cy="9" r="3"/><circle cx="24" cy="18" r="3"/><circle cx="10" cy="20" r="3"/><circle cx="17" cy="17" r="2"/></svg>
+        <span>REEL<br />FINDER</span>
+      </a>
+      <nav aria-label="Primary navigation">
+        <a class="active" href="#discover">Discover</a>
+        <a href="#new">New releases</a>
+        <a href="#watchlist" id="watchlistLink">Watchlist <span id="watchCount">0</span></a>
+      </nav>
+      <button class="round-button" id="randomButton" aria-label="Pick something for me" title="Pick something for me">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16 3h5v5M4 20 21 3M21 16v5h-5M15 15l6 6M4 4l5 5"/></svg>
+      </button>
+    </header>
+
+    <main id="top">
+      <section class="hero" id="discover">
+        <div class="hero-copy">
+          <p class="eyebrow"><span></span> Freshly catalogued · <span id="today"></span></p>
+          <h1>Find the story<br />worth staying<br /><em>in for.</em></h1>
+          <p class="intro">Ratings from both sides of the aisle. Trailers, cast, episodes, and exactly where it’s playing.</p>
+          <form class="search" id="searchForm" role="search">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></svg>
+            <label class="sr-only" for="searchInput">Search movies and TV shows</label>
+            <input id="searchInput" autocomplete="off" placeholder="Search any movie or TV show…" />
+            <kbd>ENTER</kbd>
+            <button type="submit">Find it <span>↗</span></button>
+          </form>
+          <div class="quick-picks" aria-label="Quick searches">
+            <span>Try</span>
+            <button data-query="Severance">Severance</button>
+            <button data-query="Sinners">Sinners</button>
+            <button data-query="The Studio">The Studio</button>
+          </div>
+        </div>
+
+        <div class="film-strip" aria-label="New and noteworthy titles">
+          <div class="strip-label"><span>NOW SHOWING</span><span>VOL. 07</span></div>
+          <button class="poster poster-main" data-title-id="sinners" aria-label="Open Sinners details">
+            <img src="https://images.unsplash.com/photo-1519501025264-65ba15a82390?auto=format&fit=crop&w=1000&q=85" alt="Aerial cityscape at dusk" />
+            <span class="poster-shade"></span>
+            <span class="poster-copy"><small>#1 THIS WEEK</small><strong>SINNERS</strong><span>Drama · Thriller</span></span>
+            <span class="play"><svg viewBox="0 0 24 24"><path d="m9 7 8 5-8 5z"/></svg></span>
+          </button>
+          <button class="poster poster-side poster-top" data-title-id="severance" aria-label="Open Severance details">
+            <img src="https://images.unsplash.com/photo-1497366811353-6870744d04b2?auto=format&fit=crop&w=700&q=85" alt="Geometric modern office" />
+            <span class="poster-shade"></span><span class="poster-copy"><small>NEW EPISODE</small><strong>SEVERANCE</strong></span>
+          </button>
+          <button class="poster poster-side poster-bottom" data-title-id="mickey17" aria-label="Open Mickey 17 details">
+            <img src="https://images.unsplash.com/photo-1451187580459-43490279c0fa?auto=format&fit=crop&w=700&q=85" alt="Earth viewed from space" />
+            <span class="poster-shade"></span><span class="poster-copy"><small>JUST ADDED</small><strong>MICKEY 17</strong></span>
+          </button>
+          <div class="frame-marks" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i></div>
+        </div>
+      </section>
+
+      <section class="shelf" id="new">
+        <div class="section-heading">
+          <div><p class="eyebrow">The shortlist</p><h2>New & noteworthy</h2></div>
+          <div class="filter" role="group" aria-label="Filter titles">
+            <button class="selected" data-filter="all">Everything</button><button data-filter="movie">Films</button><button data-filter="tv">Series</button>
+          </div>
+        </div>
+        <div class="title-grid" id="titleGrid"></div>
+      </section>
+
+      <section class="results-section" id="results" hidden>
+        <div class="section-heading">
+          <div><p class="eyebrow">Search results</p><h2 id="resultsTitle">Matches</h2></div>
+          <button class="text-button" id="clearSearch">Clear search</button>
+        </div>
+        <div class="result-status" id="resultStatus" role="status"></div>
+        <div class="title-grid" id="resultsGrid"></div>
+      </section>
+
+      <section class="watchlist-section" id="watchlist" hidden>
+        <div class="section-heading"><div><p class="eyebrow">Saved for later</p><h2>Your watchlist</h2></div></div>
+        <div class="title-grid" id="watchlistGrid"></div>
+      </section>
+    </main>
+
+    <footer><a class="brand mini" href="#top">REEL FINDER</a><p>One search. The whole picture.</p><p class="data-note">Availability varies by region · Search via Cinemeta/TMDB · Ratings from IMDb & Rotten Tomatoes</p></footer>
+
+    <dialog class="detail-dialog" id="detailDialog">
+      <div id="detailContent"></div>
+    </dialog>
+
+    <div class="toast" id="toast" role="status"></div>
+    <script src="app.js"></script>
+  </body>
+</html>
