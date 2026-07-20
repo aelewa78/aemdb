@@ -169,7 +169,7 @@ function reviewCardMarkup(review, local = false) {
 function reviewsMarkup(item) {
   const key = keyFor(item);
   const local = localReviewStats(key);
-  const external = (item.audienceReviews || []).slice(0, 4);
+  const external = (item.audienceReviews || []).slice(0, 5);
   const allReviews = [...local.reviews.map((review) => ({ ...review, local: true })), ...external];
   return `<section class="detail-section audience-section">
     <div class="audience-heading"><div><p class="detail-kicker">Audience notes</p><h3>User reviews</h3></div><div class="audience-big-score"><strong>${local.average ? local.average.toFixed(1) : item.audienceScore || "—"}</strong><span>${local.average ? `${local.reviews.length} Reel Finder review${local.reviews.length === 1 ? "" : "s"}` : item.audienceReviewCount ? `${Number(item.audienceReviewCount).toLocaleString()} audience ratings` : "No ratings yet"}</span></div></div>

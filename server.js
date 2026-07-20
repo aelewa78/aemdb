@@ -86,7 +86,7 @@ async function rottenTomatoes(title, type) {
       || page.match(/"criticsScore":\{[^}]*"score":"?(\d{1,3})"?/i)?.[1]
       || page.match(/"criticsScore":\{[^}]*"scorePercent":"(\d{1,3})%"/i)?.[1];
     const audienceScore = reviewData.audienceScore?.score;
-    const reviews = (reviewData.reviews || []).slice(0, 1).map((review) => ({
+    const reviews = (reviewData.reviews || []).slice(0, 5).map((review) => ({
       name: review.displayName || review.user?.displayName || "Audience member",
       rating: review.rating || null,
       text: (review.review || "").split(/\s+/).slice(0, 20).join(" ") + ((review.review || "").split(/\s+/).length > 20 ? "…" : ""),
